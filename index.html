@@ -69,6 +69,7 @@
     text-align: center; max-width: 22rem; letter-spacing: .01em;
   }
   #date.peek { color: var(--ink); }
+  #date.preview { color: var(--accent); }
   #marks { display: flex; gap: 6px; align-items: center; height: 8px; transition: opacity .6s ease; }
   #marks span { display: block; height: 4px; border-radius: 2px; background: var(--faint); }
   #marks span.d { width: 4px; }
@@ -96,39 +97,83 @@
 <form id="setup" hidden><input id="setupLink" type="text" inputmode="url" autocomplete="off" placeholder="Paste your link" aria-label="Setup link"><button type="submit">Save</button></form>
 
 <script>
-/* ---------- Codebook: "." = short tap, "-" = long press ---------- */
+/* ===================== Codebook ===================== */
+/* "." = short tap, "-" = long press */
 const CODEBOOK = {
-  ".":   "അതെ",
-  "-":   "ഇല്ല",
-  "..":  "ചിലപ്പോൾ",
-  "--":  "പിന്നെ",
-  ".-":  "മനസ്സിലായി",
-  "-.":  "ഇപ്പോൾ സംസാരിക്കാൻ പറ്റില്ല",
-  "...": "ഫ്രീ ആണോ?",
-  "---": "വിളിക്ക്",
-  ".--": "എവിടെയാ?",
-  "-..": "ഓക്കെ ആണോ?",
-  "..-": "വന്നുകൊണ്ടിരിക്കുന്നു",
-  "-.-": "കാണാൻ പറ്റുമോ?",
-  ".-.": "കഴിഞ്ഞു",
-  "--.": "സഹായം വേണം"
+  ".":    "അതെ",
+  "-":    "ഇല്ല",
+  "..":   "ഉറങ്ങാൻ പോവാ, ഗുഡ് നൈറ്റ്",
+  "--":   "കുറച്ച് കഴിഞ്ഞ് പറയാം",
+  ".-":   "മനസ്സിലായി, സാരമില്ല",
+  "-.":   "ഇവിടെ പ്രശ്നങ്ങളുണ്ട്",
+  "...":  "കഴിച്ചോ?",
+  "---":  "സംസാരിക്കണം, വിളിക്കാമോ?",
+  ".--":  "എത്തിയോ?",
+  "-..":  "എല്ലാം ഓക്കെ അല്ലേ?",
+  "..-":  "ഇറങ്ങി, വരുന്നു",
+  "-.-":  "ഇന്ന് കാണാമോ?",
+  ".-.":  "വീട്ടിലെത്തി",
+  "--.":  "അത്യാവശ്യം, ഉടനെ വിളിക്ക്",
+  "....": "ഓഫീസിലാണോ?",
+  ".-.-": "ലവ് യൂ"
 };
-const LONG_MS = 280;     // hold longer than this = dash
-const SEND_AFTER = 1400; // pause this long = send
+
+/* ===================== Settings ===================== */
+const LONG_MS = 280;          // hold longer than this = dash
+const SEND_AFTER = 1800;      // pause this long = send
 const MAX_LEN = 4;
+const UNLOCK_MS = 30000;      // sending stays unlocked this long after the last touch
+const TRIPLE_MS = 800;        // three date taps within this = reveal + unlock
+const PEEK_MS = 2600;
+const NET_TIMEOUT = 8000;     // give up on a network call after this
+const RETRY_MS = 10000;       // retry unsent messages this often
+const GIVE_UP_MS = 15 * 60000;// drop a message that couldn't go out in 15 minutes
+const REFRESH_MS = 60000;     // backup check for new messages while open
+const HERE_EVERY_MS = 240000; // "I'm here" refresh while open
+const HERE_FRESH_S = 300;     // how long a "here" counts
+const HISTORY_MAX = 3;        // received messages kept on the phone
+const HISTORY_TTL = 24 * 3600000; // ...and forgotten after 24 hours
+const SWIPE_PX = 40;          // swipe left on the date this far = older message
+
+const SERVER = "https://ntfy.sh";
+const NOTE_TITLE = "Backup";
+const NOTE_TEXT = "Sync complete";
 
 const $ = id => document.getElementById(id);
 const face = $("face"), dateEl = $("date"), marksEl = $("marks"), noteEl = $("note");
 
-/* ---------- Clock ---------- */
-let peeking = false;
-/* ---------- Lock: triple-tap the date to reveal + unlock sending ---------- */
-const UNLOCK_MS = 30000;
+/* ===================== Small helpers ===================== */
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
+function tfetch(url, opts = {}, ms = NET_TIMEOUT) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+    .finally(() => clearTimeout(timer));
+}
+let noteTimer = null;
+function note(text, ms) {
+  noteEl.textContent = text || "";
+  clearTimeout(noteTimer);
+  if (text && ms) noteTimer = setTimeout(() => { noteEl.textContent = ""; }, ms);
+}
+
+/* ===================== Lock ===================== */
 let unlockedUntil = 0;
 const isUnlocked = () => Date.now() < unlockedUntil;
-const extendUnlock = () => { if (isUnlocked()) unlockedUntil = Date.now() + UNLOCK_MS; };
+const touchUnlock = () => { if (isUnlocked()) unlockedUntil = Date.now() + UNLOCK_MS; };
+
+/* ===================== Clock + date line ===================== */
+let peekText = null, previewText = null, peekTimer = null;
 function dateText() {
   return new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+function renderDate() {
+  dateEl.classList.toggle("preview", previewText !== null);
+  dateEl.classList.toggle("peek", previewText === null && peekText !== null);
+  dateEl.textContent = previewText !== null ? previewText : peekText !== null ? peekText : dateText();
 }
 function tick() {
   const n = new Date();
@@ -136,11 +181,11 @@ function tick() {
   $("ap").textContent = n.getHours() < 12 ? "am" : "pm";
   $("mm").textContent = String(n.getMinutes()).padStart(2, "0");
   $("colon").classList.toggle("off", !isUnlocked() && n.getSeconds() % 2 === 1);
-  if (!peeking) dateEl.textContent = dateText();
+  renderDate();
 }
 tick(); setInterval(tick, 1000);
 
-/* ---------- Marks ---------- */
+/* ===================== Marks ===================== */
 function drawMarks(code, kind) {
   marksEl.className = kind || "";
   marksEl.innerHTML = "";
@@ -150,54 +195,83 @@ function drawMarks(code, kind) {
     marksEl.appendChild(s);
   }
 }
+const restoreMarks = () => latest ? drawMarks(latest.code, "in") : drawMarks("");
 
-/* ---------- Storage helpers ---------- */
-const store = {
-  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
-};
+/* ===================== Incoming + history ===================== */
+// Last few received messages, newest first: [{ key, code, t, seen }]
+function loadHistory() {
+  try {
+    const h = JSON.parse(store.get("history") || "[]");
+    return Array.isArray(h) ? h.filter(x => x && CODEBOOK[x.code] && typeof x.t === "number") : [];
+  } catch { return []; }
+}
+let history = loadHistory();
+let latest = null;
+const saveHistory = () => store.set("history", JSON.stringify(history));
+function pruneHistory() {
+  const before = history.length;
+  history = history.filter(x => Date.now() - x.t < HISTORY_TTL);
+  if (history.length !== before) saveHistory();
+  latest = history[0] || null;
+}
+const refreshUnread = () => document.body.classList.toggle("unread", history.some(x => !x.seen));
+pruneHistory(); refreshUnread();
 
-/* ---------- Incoming ---------- */
-let latest = null; // {code, t}
-function showIncoming(sig, fresh) {
-  latest = sig;
-  drawMarks(sig.code, "in");
-  const seen = Number(store.get("seen") || 0);
-  if (sig.t > seen) {
-    document.body.classList.add("unread");
-    if (fresh && navigator.vibrate) {
-      const pattern = [];
-      for (const c of sig.code) pattern.push(c === "." ? 90 : 280, 140);
-      try { navigator.vibrate(pattern); } catch {}
-    }
+function addIncoming(item, fresh) {
+  if (history.some(x => x.key === item.key)) return;
+  item.seen = item.t <= Number(store.get("seen") || 0);
+  history.push(item);
+  history.sort((a, b) => b.t - a.t);
+  history = history.slice(0, HISTORY_MAX);
+  if (!history.includes(item)) return;          // older than everything kept
+  saveHistory();
+  latest = history[0];
+  if (!buffer) drawMarks(latest.code, "in");
+  refreshUnread();
+  if (fresh && !item.seen && navigator.vibrate) {
+    const pattern = [];
+    for (const c of item.code) pattern.push(c === "." ? 90 : 280, 140);
+    try { navigator.vibrate(pattern); } catch {}
   }
 }
 function ago(t) {
-  const m = Math.round((Date.now() - t) / 60000);
+  const m = Math.max(0, Math.round((Date.now() - t) / 60000));
   if (m < 1) return "just now";
   if (m < 60) return m + " min ago";
   const h = Math.round(m / 60);
   return h < 24 ? h + " h ago" : Math.round(h / 24) + " d ago";
 }
-function peek() {
-  peeking = true;
-  if (latest) {
-    dateEl.textContent = (CODEBOOK[latest.code] || "Unknown") + " (" + ago(latest.t) + ")";
-    store.set("seen", String(latest.t));
-    document.body.classList.remove("unread");
-  } else {
-    dateEl.textContent = "Nothing yet";
-  }
-  dateEl.classList.add("peek");
-  clearTimeout(peek.timer);
-  peek.timer = setTimeout(() => {
-    peeking = false; dateEl.classList.remove("peek"); dateEl.textContent = dateText();
-  }, 2600);
+
+let peekIndex = 0;
+function showPeek(text) {
+  peekText = text;
+  renderDate();
+  clearTimeout(peekTimer);
+  peekTimer = setTimeout(() => { peekText = null; renderDate(); }, PEEK_MS);
+}
+function peekAt(i) {
+  const it = history[i];
+  const pos = history.length > 1 ? ", " + (i + 1) + "/" + history.length : "";
+  showPeek(CODEBOOK[it.code] + " (" + ago(it.t) + pos + ")");
+}
+function peek() {                       // triple-tap: newest message
+  pruneHistory();
+  peekIndex = 0;
+  if (!history.length) { showPeek("Nothing yet"); return; }
+  for (const x of history) x.seen = true;
+  store.set("seen", String(history[0].t));
+  saveHistory(); refreshUnread();
+  peekAt(0);
+}
+function peekOlder() {                  // swipe left while showing: one older
+  if (peekText === null || !history.length) return;
+  if (peekIndex + 1 < history.length) { peekIndex++; peekAt(peekIndex); }
+  else showPeek("No older messages");
 }
 
-/* ---------- Sending ---------- */
+/* ===================== Composing ===================== */
 let buffer = "", pressStart = 0, longTimer = null, sendTimer = null;
-let send = async () => false; // set up below
+let enqueue = () => {}; // set up once connected
 
 function startPress() {
   clearTimeout(sendTimer);
@@ -214,29 +288,39 @@ function endPress() {
   buffer += held > LONG_MS ? "-" : ".";
   if (buffer.length > MAX_LEN) { reject(); return; }
   drawMarks(buffer, "out");
+  // Preview what will be sent; a single tap on it cancels
+  previewText = CODEBOOK[buffer] ? "→ " + CODEBOOK[buffer] : null;
+  renderDate();
   sendTimer = setTimeout(finish, SEND_AFTER);
 }
-function reject() {
-  buffer = "";
-  marksEl.classList.add("shake");
-  setTimeout(() => { latest ? drawMarks(latest.code, "in") : drawMarks(""); }, 400);
+function clearCompose() {
+  clearTimeout(sendTimer); clearTimeout(longTimer);
+  buffer = ""; pressStart = 0; previewText = null;
+  document.body.classList.remove("pressing", "long");
+  renderDate();
 }
-async function finish() {
-  const code = buffer; buffer = "";
+function reject() {
+  clearCompose();
+  marksEl.classList.add("shake");
+  setTimeout(restoreMarks, 400);
+}
+function finish() {
+  const code = buffer;
+  clearCompose();
   if (!CODEBOOK[code]) { reject(); return; }
-  const ok = await send(code);
-  if (!ok) { reject(); return; }
+  enqueue(code);
   setTimeout(() => {
     marksEl.classList.add("fade");
-    setTimeout(() => { latest ? drawMarks(latest.code, "in") : drawMarks(""); }, 600);
-  }, 900);
+    setTimeout(restoreMarks, 600);
+  }, 700);
 }
 
+/* ===================== Touch handling ===================== */
 face.addEventListener("pointerdown", e => {
   if (e.target === dateEl) return;
   e.preventDefault();
-  if (!isUnlocked()) return;
-  extendUnlock();
+  if (!isUnlocked()) return;           // locked: taps do nothing
+  touchUnlock();
   try { face.setPointerCapture(e.pointerId); } catch {}
   startPress();
 });
@@ -246,44 +330,66 @@ face.addEventListener("pointercancel", () => {
   document.body.classList.remove("pressing", "long");
 });
 face.addEventListener("contextmenu", e => e.preventDefault());
-dateEl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); });
-let dateTaps = [];
+
+let dateTaps = [], swipeStartX = null;
+dateEl.addEventListener("pointerdown", e => {
+  e.stopPropagation(); e.preventDefault();
+  swipeStartX = e.clientX;
+  try { dateEl.setPointerCapture(e.pointerId); } catch {}
+});
+dateEl.addEventListener("pointercancel", () => { swipeStartX = null; });
 dateEl.addEventListener("pointerup", e => {
   e.stopPropagation(); e.preventDefault();
+  const dx = swipeStartX === null ? 0 : e.clientX - swipeStartX;
+  swipeStartX = null;
+  if (dx <= -SWIPE_PX) {                // swipe left
+    dateTaps = [];
+    if (!buffer) peekOlder();
+    return;
+  }
+  if (Math.abs(dx) > 25) return;        // some other drag: ignore
+  if (buffer) {                         // composing: one tap cancels
+    reject(); dateTaps = [];
+    note("Cancelled", 1500);
+    return;
+  }
   const now = Date.now();
-  dateTaps = dateTaps.filter(t => now - t < 800);
+  dateTaps = dateTaps.filter(t => now - t < TRIPLE_MS);
   dateTaps.push(now);
-  if (dateTaps.length >= 3) { dateTaps = []; unlockedUntil = now + UNLOCK_MS; peek(); tick(); }
+  if (dateTaps.length >= 3) {
+    dateTaps = [];
+    unlockedUntil = now + UNLOCK_MS;
+    peek(); tick();
+  }
 });
-// Keyboard: Space/Enter works like the button, P peeks
 face.addEventListener("keydown", e => {
-  if ((e.key === " " || e.key === "Enter") && !e.repeat && isUnlocked()) { e.preventDefault(); extendUnlock(); startPress(); }
+  if ((e.key === " " || e.key === "Enter") && !e.repeat && isUnlocked()) { e.preventDefault(); touchUnlock(); startPress(); }
 });
 face.addEventListener("keyup", e => { if (e.key === " " || e.key === "Enter") endPress(); });
 
-/* ---------- Connect (ntfy.sh) ---------- */
-const SERVER = "https://ntfy.sh";
-const NOTE_TITLE = "Backup";
-const NOTE_TEXT = "Sync complete";
-// The code rides inside the notification text as invisible characters.
+/* ===================== Message format ===================== */
+// Codes travel as invisible characters plus the time they were tapped.
 const ZW = { ".": "\u200B", "-": "\u200C" };
-const encode = code => NOTE_TEXT + [...code].map(c => ZW[c]).join("");
-const decode = text => {
-  let out = "";
-  for (const ch of String(text || "")) {
-    if (ch === "\u200B") out += ".";
-    else if (ch === "\u200C") out += "-";
+const encode = (code, at) => NOTE_TEXT + [...code].map(c => ZW[c]).join("") + "|" + at;
+function decode(text) {
+  text = String(text || "");
+  let code = "";
+  for (const ch of text) {
+    if (ch === "\u200B") code += ".";
+    else if (ch === "\u200C") code += "-";
   }
-  return out;
-};
+  const m = text.match(/\|(\d{12,14})$/);
+  return { code, at: m ? Number(m[1]) : null };
+}
 
+/* ===================== Setup link ===================== */
 function readConfig() {
   const p = new URLSearchParams(location.hash.slice(1));
-  const ok = s => /^[A-Za-z0-9_-]{8,64}$/.test(s || "");
+  const ok = s => /^[A-Za-z0-9_-]{8,60}$/.test(s || "");
   let me = p.get("me"), to = p.get("to");
-  if (ok(me) && ok(to)) { store.set("me", me); store.set("to", to); return { me, to }; }
+  if (ok(me) && ok(to) && me !== to) { store.set("me", me); store.set("to", to); return { me, to }; }
   me = store.get("me"); to = store.get("to");
-  return ok(me) && ok(to) ? { me, to } : null;
+  return ok(me) && ok(to) && me !== to ? { me, to } : null;
 }
 
 const cfg = readConfig();
@@ -293,68 +399,163 @@ if (!cfg) {
   form.addEventListener("submit", e => {
     e.preventDefault();
     const raw = $("setupLink").value.trim();
-    const hash = raw.includes("#") ? raw.slice(raw.indexOf("#")) : "#" + raw;
-    location.hash = hash.slice(1);
+    const hash = raw.includes("#") ? raw.slice(raw.indexOf("#") + 1) : raw;
+    location.hash = hash;
     if (readConfig()) location.reload();
-    else noteEl.textContent = "That link didn't work. Check it and try again.";
+    else note("That link didn't work. Check it and try again.");
   });
 } else {
-  send = async code => {
-    try {
-      const r = await fetch(SERVER, {
-        method: "POST",
-        body: JSON.stringify({ topic: cfg.to, title: NOTE_TITLE, message: encode(code) })
-      });
-      if (!r.ok) throw new Error(r.status);
-      noteEl.textContent = "";
-      return true;
-    } catch {
-      noteEl.textContent = "Not sent. Check your connection.";
-      return false;
-    }
-  };
+  /* Three channels per person, all from the same setup link:
+       cfg.me        -> the ntfy app's channel (lock-screen alert only)
+       cfg.me + "_d" -> the codes, read only by the clock
+       cfg.me + "_p" -> "here" / "away", so the other side knows if the clock is open */
+  const DATA = t => t + "_d";
+  const PRES = t => t + "_p";
 
-  let lastT = 0, firstLoad = true;
-  function handle(msg, live) {
-    if (!msg || msg.event !== "message") return;
-    const code = decode(msg.message);
-    if (!CODEBOOK[code]) return;
-    const t = (msg.time || 0) * 1000;
-    if (t <= lastT) return;
-    lastT = t;
-    const sig = { code, t };
-    if (!buffer) showIncoming(sig, live && !firstLoad);
-    else { latest = sig; if (t > Number(store.get("seen") || 0)) document.body.classList.add("unread"); }
+  const post = (topic, extra) => tfetch(SERVER, {
+    method: "POST",
+    body: JSON.stringify(Object.assign({ topic }, extra))
+  }).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); });
+
+  async function partnerIsHere() {
+    try {
+      const r = await tfetch(SERVER + "/" + PRES(cfg.to) + "/json?poll=1&since=10m");
+      if (!r.ok) return false;
+      let last = null;
+      for (const line of (await r.text()).split("\n")) {
+        if (!line.trim()) continue;
+        try { const m = JSON.parse(line); if (m.event === "message") last = m; } catch {}
+      }
+      return !!last && last.message === "here" && (Date.now() / 1000 - last.time) < HERE_FRESH_S;
+    } catch { return false; } // unsure -> send the alert anyway
   }
 
+  /* ---------- Outbox: nothing is lost if the network drops ---------- */
+  const loadOutbox = () => { try { return JSON.parse(store.get("outbox") || "[]"); } catch { return []; } };
+  const saveOutbox = box => store.set("outbox", JSON.stringify(box));
+  let flushing = false, retryTimer = null;
+
+  enqueue = code => {
+    const box = loadOutbox();
+    box.push({ code, at: Date.now(), dataSent: false });
+    saveOutbox(box);
+    flush();
+  };
+
+  async function flush() {
+    if (flushing) return;
+    flushing = true;
+    clearTimeout(retryTimer);
+    let box = loadOutbox(), dropped = false;
+    while (box.length) {
+      const item = box[0];
+      if (Date.now() - item.at > GIVE_UP_MS) { box.shift(); saveOutbox(box); dropped = true; continue; }
+      try {
+        if (!item.dataSent) {
+          await post(DATA(cfg.to), { message: encode(item.code, item.at) });
+          item.dataSent = true; saveOutbox(box);
+        }
+        if (!(await partnerIsHere())) {
+          await post(cfg.to, { title: NOTE_TITLE, message: NOTE_TEXT });
+        }
+        box.shift(); saveOutbox(box);
+      } catch {
+        note("Waiting for connection…");
+        retryTimer = setTimeout(flush, RETRY_MS);
+        flushing = false;
+        return;
+      }
+    }
+    flushing = false;
+    note(dropped ? "A message couldn't be sent. Please send it again." : "", dropped ? 6000 : 0);
+  }
+  window.addEventListener("online", flush);
+
+  /* ---------- Presence ---------- */
+  let presState = null, hereTimer = null;
+  function presence(state) {
+    const body = JSON.stringify({ topic: PRES(cfg.me), message: state });
+    if (state === "away" && navigator.sendBeacon) {
+      try { if (navigator.sendBeacon(SERVER, body)) return; } catch {}
+    }
+    fetch(SERVER, { method: "POST", body, keepalive: true }).catch(() => {});
+  }
+  function goHere() {
+    if (presState !== "here") { presState = "here"; presence("here"); }
+    clearInterval(hereTimer);
+    hereTimer = setInterval(() => presence("here"), HERE_EVERY_MS);
+  }
+  function goAway() {
+    clearInterval(hereTimer);
+    if (presState !== "away") { presState = "away"; presence("away"); }
+  }
+
+  /* ---------- Receiving ---------- */
+  const seenKeys = new Set();
+  let firstLoad = true;
+  function handle(msg, live) {
+    if (!msg || msg.event !== "message") return;
+    const { code, at } = decode(msg.message);
+    if (!CODEBOOK[code]) return;
+    const server = (msg.time || 0) * 1000;
+    const key = at ? code + "@" + at : msg.id;
+    if (seenKeys.has(key)) return;      // ignore duplicates from retries
+    seenKeys.add(key);
+    // Use the time it was tapped, kept within sensible bounds of the server's time
+    const t = at ? Math.min(server, Math.max(at, server - GIVE_UP_MS - 60000)) : server;
+    if (Date.now() - t > HISTORY_TTL) return;
+    addIncoming({ key, code, t }, live && !firstLoad);
+  }
+
+  let polling = false;
   async function poll() {
+    if (polling) return;
+    polling = true;
     try {
-      const r = await fetch(SERVER + "/" + cfg.me + "/json?poll=1&since=all");
-      const text = await r.text();
-      for (const line of text.split("\n")) {
+      const r = await tfetch(SERVER + "/" + DATA(cfg.me) + "/json?poll=1&since=all");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      for (const line of (await r.text()).split("\n")) {
         if (!line.trim()) continue;
         try { handle(JSON.parse(line), false); } catch {}
       }
-      noteEl.textContent = "";
+      if (noteEl.textContent === "Offline.") note("");
     } catch {
-      noteEl.textContent = "Offline.";
+      if (!loadOutbox().length) note("Offline.");
     }
     firstLoad = false;
+    polling = false;
   }
 
   let es = null;
   function listen() {
-    if (es) es.close();
+    if (es && es.readyState !== 2) return;   // already connected
     try {
-      es = new EventSource(SERVER + "/" + cfg.me + "/sse");
+      es = new EventSource(SERVER + "/" + DATA(cfg.me) + "/sse");
       es.onmessage = e => { try { handle(JSON.parse(e.data), true); } catch {} };
     } catch {}
   }
+  function stopListening() { if (es) { es.close(); es = null; } }
 
-  poll().then(listen);
+  /* ---------- Open / closed ---------- */
+  let refreshTimer = null;
+  function onVisible() {
+    goHere(); poll().then(listen); flush();
+    clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => { poll(); listen(); }, REFRESH_MS);
+  }
+  function onHidden() {
+    clearInterval(refreshTimer);
+    goAway(); stopListening();
+    clearCompose(); restoreMarks();
+    unlockedUntil = 0;                  // lock again when the clock is closed
+  }
+  window.__clockVisible = v => (v ? onVisible() : onHidden()); // used by the Android app
+
+  if (document.visibilityState === "visible") onVisible(); else poll();
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { poll(); listen(); }
+    document.visibilityState === "visible" ? onVisible() : onHidden();
   });
+  window.addEventListener("pagehide", onHidden);
 }
 </script>
 </body>
