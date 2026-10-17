@@ -58,6 +58,11 @@
   body.unread #colon { color: var(--accent); }
   body.pressing #time { opacity: .82; transform: scale(.992); }
   body.long #time { opacity: .68; }
+  #ap { font-size: .16em; letter-spacing: .04em; margin-left: .35em; vertical-align: .35em; color: var(--dim); font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  #setup { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 3rem); transform: translateX(-50%); display: flex; gap: .5rem; width: min(90vw, 26rem); }
+  #setup[hidden] { display: none; }
+  #setup input { flex: 1; min-width: 0; font: inherit; font-size: .85rem; padding: .6rem .7rem; border-radius: 8px; border: 1px solid var(--faint); background: transparent; color: var(--ink); -webkit-user-select: text; user-select: text; }
+  #setup button { font: inherit; font-size: .85rem; padding: .6rem .9rem; border-radius: 8px; border: 0; background: var(--accent); color: var(--bg); }
   #date {
     font-size: 1rem; color: var(--dim); min-height: 1.5em; padding: .9rem 2rem; min-width: 12rem;
     cursor: pointer; touch-action: none;
@@ -83,11 +88,12 @@
 </head>
 <body>
 <div id="face" role="button" tabindex="0" aria-label="Clock">
-  <div id="time"><span id="hh">--</span><span id="colon">:</span><span id="mm">--</span></div>
+  <div id="time"><span id="hh">--</span><span id="colon">:</span><span id="mm">--</span><span id="ap"></span></div>
   <div id="date"></div>
   <div id="marks" aria-hidden="true"></div>
 </div>
 <div id="note"></div>
+<form id="setup" hidden><input id="setupLink" type="text" inputmode="url" autocomplete="off" placeholder="Paste your link" aria-label="Setup link"><button type="submit">Save</button></form>
 
 <script>
 /* ---------- Codebook: "." = short tap, "-" = long press ---------- */
@@ -116,14 +122,20 @@ const face = $("face"), dateEl = $("date"), marksEl = $("marks"), noteEl = $("no
 
 /* ---------- Clock ---------- */
 let peeking = false;
+/* ---------- Lock: triple-tap the date to reveal + unlock sending ---------- */
+const UNLOCK_MS = 30000;
+let unlockedUntil = 0;
+const isUnlocked = () => Date.now() < unlockedUntil;
+const extendUnlock = () => { if (isUnlocked()) unlockedUntil = Date.now() + UNLOCK_MS; };
 function dateText() {
   return new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 function tick() {
   const n = new Date();
-  $("hh").textContent = String(n.getHours()).padStart(2, "0");
+  $("hh").textContent = String(n.getHours() % 12 || 12);
+  $("ap").textContent = n.getHours() < 12 ? "am" : "pm";
   $("mm").textContent = String(n.getMinutes()).padStart(2, "0");
-  $("colon").classList.toggle("off", n.getSeconds() % 2 === 1);
+  $("colon").classList.toggle("off", !isUnlocked() && n.getSeconds() % 2 === 1);
   if (!peeking) dateEl.textContent = dateText();
 }
 tick(); setInterval(tick, 1000);
@@ -223,6 +235,8 @@ async function finish() {
 face.addEventListener("pointerdown", e => {
   if (e.target === dateEl) return;
   e.preventDefault();
+  if (!isUnlocked()) return;
+  extendUnlock();
   try { face.setPointerCapture(e.pointerId); } catch {}
   startPress();
 });
@@ -233,11 +247,17 @@ face.addEventListener("pointercancel", () => {
 });
 face.addEventListener("contextmenu", e => e.preventDefault());
 dateEl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); });
-dateEl.addEventListener("pointerup", e => { e.stopPropagation(); e.preventDefault(); peek(); });
+let dateTaps = [];
+dateEl.addEventListener("pointerup", e => {
+  e.stopPropagation(); e.preventDefault();
+  const now = Date.now();
+  dateTaps = dateTaps.filter(t => now - t < 800);
+  dateTaps.push(now);
+  if (dateTaps.length >= 3) { dateTaps = []; unlockedUntil = now + UNLOCK_MS; peek(); tick(); }
+});
 // Keyboard: Space/Enter works like the button, P peeks
 face.addEventListener("keydown", e => {
-  if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); startPress(); }
-  if (e.key === "p" || e.key === "P") peek();
+  if ((e.key === " " || e.key === "Enter") && !e.repeat && isUnlocked()) { e.preventDefault(); extendUnlock(); startPress(); }
 });
 face.addEventListener("keyup", e => { if (e.key === " " || e.key === "Enter") endPress(); });
 
@@ -268,7 +288,16 @@ function readConfig() {
 
 const cfg = readConfig();
 if (!cfg) {
-  noteEl.textContent = "Open your personal setup link once.";
+  const form = $("setup");
+  form.hidden = false;
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    const raw = $("setupLink").value.trim();
+    const hash = raw.includes("#") ? raw.slice(raw.indexOf("#")) : "#" + raw;
+    location.hash = hash.slice(1);
+    if (readConfig()) location.reload();
+    else noteEl.textContent = "That link didn't work. Check it and try again.";
+  });
 } else {
   send = async code => {
     try {
