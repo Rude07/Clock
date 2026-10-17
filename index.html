@@ -58,7 +58,8 @@
   body.unread #colon { color: var(--accent); }
   body.pressing #time { opacity: .82; transform: scale(.992); }
   body.long #time { opacity: .68; }
-  #ap { font-size: .16em; letter-spacing: .04em; margin-left: .35em; vertical-align: .35em; color: var(--dim); font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  #ap { display: inline-block; font-size: .16em; letter-spacing: .04em; vertical-align: .35em; color: var(--dim); font-family: "IBM Plex Sans", system-ui, sans-serif;
+    padding: 1.2em 1.1em 1.2em .35em; margin: -1.2em -1.1em -1.2em 0; } /* bigger invisible tap area for quick lock */
   #setup { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 3rem); transform: translateX(-50%); display: flex; gap: .5rem; width: min(90vw, 26rem); }
   #setup[hidden] { display: none; }
   #setup input { flex: 1; min-width: 0; font: inherit; font-size: .85rem; padding: .6rem .7rem; border-radius: 8px; border: 1px solid var(--faint); background: transparent; color: var(--ink); -webkit-user-select: text; user-select: text; }
@@ -134,13 +135,14 @@ const HERE_FRESH_S = 300;     // how long a "here" counts
 const HISTORY_MAX = 3;        // received messages kept on the phone
 const HISTORY_TTL = 24 * 3600000; // ...and forgotten after 24 hours
 const SWIPE_PX = 40;          // swipe left on the date this far = older message
+const DOUBLE_MS = 450;        // two taps on am/pm within this = lock now
 
 const SERVER = "https://ntfy.sh";
 const NOTE_TITLE = "Backup";
 const NOTE_TEXT = "Sync complete";
 
 const $ = id => document.getElementById(id);
-const face = $("face"), dateEl = $("date"), marksEl = $("marks"), noteEl = $("note");
+const face = $("face"), dateEl = $("date"), marksEl = $("marks"), noteEl = $("note"), apEl = $("ap");
 
 /* ===================== Small helpers ===================== */
 const store = {
@@ -318,6 +320,7 @@ function finish() {
 /* ===================== Touch handling ===================== */
 face.addEventListener("pointerdown", e => {
   if (e.target === dateEl) return;
+  if (e.target === apEl) { e.preventDefault(); return; }   // am/pm is the quick-lock spot
   e.preventDefault();
   if (!isUnlocked()) return;           // locked: taps do nothing
   touchUnlock();
@@ -330,6 +333,24 @@ face.addEventListener("pointercancel", () => {
   document.body.classList.remove("pressing", "long");
 });
 face.addEventListener("contextmenu", e => e.preventDefault());
+
+/* Quick lock: double-tap the am/pm to hide everything and lock at once */
+function lockNow() {
+  unlockedUntil = 0;
+  clearCompose();
+  clearTimeout(peekTimer);
+  peekText = null;
+  dateTaps = [];
+  restoreMarks();
+  tick();
+}
+let apLastTap = 0;
+apEl.addEventListener("pointerup", e => {
+  e.stopPropagation(); e.preventDefault();
+  const now = Date.now();
+  if (now - apLastTap < DOUBLE_MS) { apLastTap = 0; lockNow(); }
+  else apLastTap = now;
+});
 
 let dateTaps = [], swipeStartX = null;
 dateEl.addEventListener("pointerdown", e => {
