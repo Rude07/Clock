@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Clock">
+<meta name="theme-color" content="#D9DCD6">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2714%27 fill=%27%23D9DCD6%27 stroke=%27%231F2A2E%27 stroke-width=%272%27/%3E%3Cpath d=%27M16 8v8l5 3%27 stroke=%27%231F2A2E%27 stroke-width=%272%27 fill=%27none%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+<title>Clock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@200;300&family=IBM+Plex+Sans:wght@400&family=Noto+Sans+Malayalam:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #D9DCD6;
+    --ink: #1F2A2E;
+    --dim: #8A9490;
+    --faint: #B9BEB8;
+    --accent: #3C6E71;
+    color-scheme: light;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151A1C; --ink: #C9D1CF; --dim: #5B6663; --faint: #2A3235; --accent: #7FB0A8;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151A1C; --ink: #C9D1CF; --dim: #5B6663; --faint: #2A3235; --accent: #7FB0A8;
+    color-scheme: dark;
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    height: 100%; margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", "Noto Sans Malayalam", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent; overflow: hidden;
+  }
+  #face {
+    height: 100%; width: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1.1rem;
+    touch-action: none; cursor: default; outline: none;
+  }
+  #face:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+  #time {
+    font-family: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+    font-weight: 200; font-size: clamp(5.5rem, 30vw, 14rem); line-height: 0.9;
+    letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+    transition: opacity .15s ease, transform .15s ease;
+  }
+  #colon { display: inline-block; transition: color .3s ease; }
+  #colon.off { opacity: .25; }
+  body.unread #colon { color: var(--accent); }
+  body.pressing #time { opacity: .82; transform: scale(.992); }
+  body.long #time { opacity: .68; }
+  #date {
+    font-size: 1rem; color: var(--dim); min-height: 1.5em; padding: .9rem 2rem; min-width: 12rem;
+    cursor: pointer; touch-action: none;
+    text-align: center; max-width: 22rem; letter-spacing: .01em;
+  }
+  #date.peek { color: var(--ink); }
+  #marks { display: flex; gap: 6px; align-items: center; height: 8px; transition: opacity .6s ease; }
+  #marks span { display: block; height: 4px; border-radius: 2px; background: var(--faint); }
+  #marks span.d { width: 4px; }
+  #marks span.l { width: 14px; }
+  #marks.in span { background: var(--dim); }
+  #marks.out span { background: var(--accent); }
+  #marks.fade { opacity: 0; }
+  #marks.shake { animation: shake .35s ease; }
+  @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+  #note { position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+    text-align: center; font-size: .75rem; color: var(--dim); padding: 0 1rem; }
+  @media (prefers-reduced-motion: reduce) {
+    #time, #marks, #colon { transition: none; }
+    #marks.shake { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div id="face" role="button" tabindex="0" aria-label="Clock">
+  <div id="time"><span id="hh">--</span><span id="colon">:</span><span id="mm">--</span></div>
+  <div id="date"></div>
+  <div id="marks" aria-hidden="true"></div>
+</div>
+<div id="note"></div>
+
+<script>
+/* ---------- Codebook: "." = short tap, "-" = long press ---------- */
+const CODEBOOK = {
+  ".":   "അതെ",
+  "-":   "ഇല്ല",
+  "..":  "ചിലപ്പോൾ",
+  "--":  "പിന്നെ",
+  ".-":  "മനസ്സിലായി",
+  "-.":  "ഇപ്പോൾ സംസാരിക്കാൻ പറ്റില്ല",
+  "...": "ഫ്രീ ആണോ?",
+  "---": "വിളിക്ക്",
+  ".--": "എവിടെയാ?",
+  "-..": "ഓക്കെ ആണോ?",
+  "..-": "വന്നുകൊണ്ടിരിക്കുന്നു",
+  "-.-": "കാണാൻ പറ്റുമോ?",
+  ".-.": "കഴിഞ്ഞു",
+  "--.": "സഹായം വേണം"
+};
+const LONG_MS = 280;     // hold longer than this = dash
+const SEND_AFTER = 1400; // pause this long = send
+const MAX_LEN = 4;
+
+const $ = id => document.getElementById(id);
+const face = $("face"), dateEl = $("date"), marksEl = $("marks"), noteEl = $("note");
+
+/* ---------- Clock ---------- */
+let peeking = false;
+function dateText() {
+  return new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+}
+function tick() {
+  const n = new Date();
+  $("hh").textContent = String(n.getHours()).padStart(2, "0");
+  $("mm").textContent = String(n.getMinutes()).padStart(2, "0");
+  $("colon").classList.toggle("off", n.getSeconds() % 2 === 1);
+  if (!peeking) dateEl.textContent = dateText();
+}
+tick(); setInterval(tick, 1000);
+
+/* ---------- Marks ---------- */
+function drawMarks(code, kind) {
+  marksEl.className = kind || "";
+  marksEl.innerHTML = "";
+  for (const c of code) {
+    const s = document.createElement("span");
+    s.className = c === "." ? "d" : "l";
+    marksEl.appendChild(s);
+  }
+}
+
+/* ---------- Storage helpers ---------- */
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+};
+
+/* ---------- Incoming ---------- */
+let latest = null; // {code, t}
+function showIncoming(sig, fresh) {
+  latest = sig;
+  drawMarks(sig.code, "in");
+  const seen = Number(store.get("seen") || 0);
+  if (sig.t > seen) {
+    document.body.classList.add("unread");
+    if (fresh && navigator.vibrate) {
+      const pattern = [];
+      for (const c of sig.code) pattern.push(c === "." ? 90 : 280, 140);
+      try { navigator.vibrate(pattern); } catch {}
+    }
+  }
+}
+function ago(t) {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + " min ago";
+  const h = Math.round(m / 60);
+  return h < 24 ? h + " h ago" : Math.round(h / 24) + " d ago";
+}
+function peek() {
+  peeking = true;
+  if (latest) {
+    dateEl.textContent = (CODEBOOK[latest.code] || "Unknown") + " (" + ago(latest.t) + ")";
+    store.set("seen", String(latest.t));
+    document.body.classList.remove("unread");
+  } else {
+    dateEl.textContent = "Nothing yet";
+  }
+  dateEl.classList.add("peek");
+  clearTimeout(peek.timer);
+  peek.timer = setTimeout(() => {
+    peeking = false; dateEl.classList.remove("peek"); dateEl.textContent = dateText();
+  }, 2600);
+}
+
+/* ---------- Sending ---------- */
+let buffer = "", pressStart = 0, longTimer = null, sendTimer = null;
+let send = async () => false; // set up below
+
+function startPress() {
+  clearTimeout(sendTimer);
+  pressStart = performance.now();
+  document.body.classList.add("pressing");
+  longTimer = setTimeout(() => document.body.classList.add("long"), LONG_MS);
+}
+function endPress() {
+  if (!pressStart) return;
+  const held = performance.now() - pressStart;
+  pressStart = 0;
+  clearTimeout(longTimer);
+  document.body.classList.remove("pressing", "long");
+  buffer += held > LONG_MS ? "-" : ".";
+  if (buffer.length > MAX_LEN) { reject(); return; }
+  drawMarks(buffer, "out");
+  sendTimer = setTimeout(finish, SEND_AFTER);
+}
+function reject() {
+  buffer = "";
+  marksEl.classList.add("shake");
+  setTimeout(() => { latest ? drawMarks(latest.code, "in") : drawMarks(""); }, 400);
+}
+async function finish() {
+  const code = buffer; buffer = "";
+  if (!CODEBOOK[code]) { reject(); return; }
+  const ok = await send(code);
+  if (!ok) { reject(); return; }
+  setTimeout(() => {
+    marksEl.classList.add("fade");
+    setTimeout(() => { latest ? drawMarks(latest.code, "in") : drawMarks(""); }, 600);
+  }, 900);
+}
+
+face.addEventListener("pointerdown", e => {
+  if (e.target === dateEl) return;
+  e.preventDefault();
+  try { face.setPointerCapture(e.pointerId); } catch {}
+  startPress();
+});
+face.addEventListener("pointerup", e => { if (e.target !== dateEl) endPress(); });
+face.addEventListener("pointercancel", () => {
+  pressStart = 0; clearTimeout(longTimer);
+  document.body.classList.remove("pressing", "long");
+});
+face.addEventListener("contextmenu", e => e.preventDefault());
+dateEl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); });
+dateEl.addEventListener("pointerup", e => { e.stopPropagation(); e.preventDefault(); peek(); });
+// Keyboard: Space/Enter works like the button, P peeks
+face.addEventListener("keydown", e => {
+  if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); startPress(); }
+  if (e.key === "p" || e.key === "P") peek();
+});
+face.addEventListener("keyup", e => { if (e.key === " " || e.key === "Enter") endPress(); });
+
+/* ---------- Connect (ntfy.sh) ---------- */
+const SERVER = "https://ntfy.sh";
+const NOTE_TITLE = "Backup";
+const NOTE_TEXT = "Sync complete";
+// The code rides inside the notification text as invisible characters.
+const ZW = { ".": "\u200B", "-": "\u200C" };
+const encode = code => NOTE_TEXT + [...code].map(c => ZW[c]).join("");
+const decode = text => {
+  let out = "";
+  for (const ch of String(text || "")) {
+    if (ch === "\u200B") out += ".";
+    else if (ch === "\u200C") out += "-";
+  }
+  return out;
+};
+
+function readConfig() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const ok = s => /^[A-Za-z0-9_-]{8,64}$/.test(s || "");
+  let me = p.get("me"), to = p.get("to");
+  if (ok(me) && ok(to)) { store.set("me", me); store.set("to", to); return { me, to }; }
+  me = store.get("me"); to = store.get("to");
+  return ok(me) && ok(to) ? { me, to } : null;
+}
+
+const cfg = readConfig();
+if (!cfg) {
+  noteEl.textContent = "Open your personal setup link once.";
+} else {
+  send = async code => {
+    try {
+      const r = await fetch(SERVER, {
+        method: "POST",
+        body: JSON.stringify({ topic: cfg.to, title: NOTE_TITLE, message: encode(code) })
+      });
+      if (!r.ok) throw new Error(r.status);
+      noteEl.textContent = "";
+      return true;
+    } catch {
+      noteEl.textContent = "Not sent. Check your connection.";
+      return false;
+    }
+  };
+
+  let lastT = 0, firstLoad = true;
+  function handle(msg, live) {
+    if (!msg || msg.event !== "message") return;
+    const code = decode(msg.message);
+    if (!CODEBOOK[code]) return;
+    const t = (msg.time || 0) * 1000;
+    if (t <= lastT) return;
+    lastT = t;
+    const sig = { code, t };
+    if (!buffer) showIncoming(sig, live && !firstLoad);
+    else { latest = sig; if (t > Number(store.get("seen") || 0)) document.body.classList.add("unread"); }
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(SERVER + "/" + cfg.me + "/json?poll=1&since=all");
+      const text = await r.text();
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try { handle(JSON.parse(line), false); } catch {}
+      }
+      noteEl.textContent = "";
+    } catch {
+      noteEl.textContent = "Offline.";
+    }
+    firstLoad = false;
+  }
+
+  let es = null;
+  function listen() {
+    if (es) es.close();
+    try {
+      es = new EventSource(SERVER + "/" + cfg.me + "/sse");
+      es.onmessage = e => { try { handle(JSON.parse(e.data), true); } catch {} };
+    } catch {}
+  }
+
+  poll().then(listen);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") { poll(); listen(); }
+  });
+}
+</script>
+</body>
+</html>
